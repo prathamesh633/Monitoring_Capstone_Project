@@ -1,0 +1,198 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metricbeat
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metricbeat
+rules:
+# Standard API resources
+- apiGroups: [""]
+  resources:
+  - nodes
+  - namespaces
+  - pods
+  - services
+  - endpoints
+  - replicationcontrollers
+  - limitranges
+  - persistentvolumes
+  - persistentvolumeclaims
+  - resourcequotas
+  - events
+  verbs: ["get", "list", "watch"]
+# ── CRITICAL: kubelet subresource access (required for pod/node metrics) ──
+- apiGroups: [""]
+  resources:
+  - nodes/stats
+  - nodes/metrics
+  - nodes/proxy
+  - nodes/spec
+  verbs: ["get"]
+- apiGroups: ["apps"]
+  resources:
+  - statefulsets
+  - deployments
+  - replicasets
+  - daemonsets
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources:
+  - jobs
+  - cronjobs
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs:
+  - /metrics
+  - /healthz
+  - /healthz/*
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metricbeat
+subjects:
+- kind: ServiceAccount
+  name: metricbeat
+  namespace: logging
+roleRef:
+  kind: ClusterRole
+  name: metricbeat
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metricbeat-config
+  namespace: logging
+data:
+  metricbeat.yml: |
+    metricbeat.modules:
+    # ── Node-level metrics (CPU, Memory, Network, Disk) ─────────────────────
+    - module: system
+      period: 30s
+      metricsets:
+        - cpu
+        - memory
+        - network
+        - diskio
+        - filesystem
+      cpu.metrics: ["percentages", "normalized_percentages"]
+      core.metrics: ["percentages"]
+
+    # ── Kubernetes Pod-level metrics ─────────────────────────────────────────
+    # Collect kubelet metrics per node (pod/container CPU and memory come from here)
+    - module: kubernetes
+      period: 30s
+      metricsets:
+        - node
+        - pod
+        - container
+        - system
+        - volume
+      host: ${NODE_NAME}
+      # Use node-resolved kubelet endpoint for better portability across clusters
+      hosts: ["https://${NODE_NAME}:10250"]
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      ssl.verification_mode: "none"
+      add_metadata: true
+
+    processors:
+      - add_kubernetes_metadata:
+          host: ${NODE_NAME}
+          default_indexers.enabled: true
+          default_matchers.enabled: true
+
+    output.elasticsearch:
+      hosts: ["http://elasticsearch-svc.logging.svc.cluster.local:9200"]
+      username: "${ELASTIC_USER}"
+      password: "${ELASTIC_PASSWORD}"
+      index: "metricbeat-%{+YYYY.MM.dd}"
+
+    # Disable automatic dashboard loading to avoid startup failures when Kibana restarts.
+    setup.dashboards.enabled: false
+    setup.template.name: "metricbeat"
+    setup.template.pattern: "metricbeat-*"
+
+    # Logging — set to debug if you still see no data
+    logging.level: info
+    logging.to_stderr: true
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: metricbeat
+  namespace: logging
+  labels:
+    app: metricbeat
+spec:
+  selector:
+    matchLabels:
+      app: metricbeat
+  template:
+    metadata:
+      labels:
+        app: metricbeat
+    spec:
+      serviceAccountName: metricbeat
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: metricbeat
+        image: docker.elastic.co/beats/metricbeat:8.12.2
+        args: ["-c", "/etc/metricbeat.yml", "-e", "--system.hostfs=/hostfs"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: ELASTIC_USER
+          valueFrom:
+            secretKeyRef:
+              name: elastic-credentials
+              key: ELASTIC_USERNAME
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elastic-credentials
+              key: ELASTIC_PASSWORD
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: config
+          mountPath: /etc/metricbeat.yml
+          subPath: metricbeat.yml
+          readOnly: true
+        - name: data
+          mountPath: /usr/share/metricbeat/data
+        - name: proc
+          mountPath: /hostfs/proc
+          readOnly: true
+        - name: sys
+          mountPath: /hostfs/sys
+          readOnly: true
+        - name: rootfs
+          mountPath: /hostfs
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: metricbeat-config
+          defaultMode: 0640
+      - name: data
+        hostPath:
+          path: /var/lib/metricbeat-data
+          type: DirectoryOrCreate
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: rootfs
+        hostPath:
+          path: /

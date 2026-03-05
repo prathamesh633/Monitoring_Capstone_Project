@@ -1,0 +1,32 @@
+# Local environment / secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+
+# Kubernetes / app secrets
+secrets.yaml
+*secret*.yaml
+k8s/elk/elastic-credentials.yaml
+k8s/elk/elastalert/elastalert.yaml
+
+# Terraform sensitive/local state
+terraform.tfvars
+*.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local kube config files
+kubeconfig
+*.kubeconfig
