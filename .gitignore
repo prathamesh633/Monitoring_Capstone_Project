@@ -11,8 +11,8 @@ id_rsa.pub
 # Kubernetes / app secrets
 secrets.yaml
 *secret*.yaml
-k8s/elk/elastic-credentials.yaml
-k8s/elk/elastalert/elastalert.yaml
+# k8s/elk/elastic-credentials.yaml
+# k8s/elk/elastalert/elastalert.yaml
 
 # Terraform sensitive/local state
 terraform.tfvars
